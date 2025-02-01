@@ -15,15 +15,16 @@ package index
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/crc32"
-	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"testing"
 
-	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 
@@ -66,7 +67,7 @@ func (m mockIndex) Symbols() (map[string]struct{}, error) {
 
 func (m mockIndex) AddSeries(ref storage.SeriesRef, l labels.Labels, chunks ...chunks.Meta) error {
 	if _, ok := m.series[ref]; ok {
-		return errors.Errorf("series with reference %d already added", ref)
+		return fmt.Errorf("series with reference %d already added", ref)
 	}
 	l.Range(func(lbl labels.Label) {
 		m.symbols[lbl.Name] = struct{}{}
@@ -115,7 +116,7 @@ func (m mockIndex) Postings(ctx context.Context, name string, values ...string) 
 func (m mockIndex) SortedPostings(p Postings) Postings {
 	ep, err := ExpandPostings(p)
 	if err != nil {
-		return ErrPostings(errors.Wrap(err, "expand postings"))
+		return ErrPostings(fmt.Errorf("expand postings: %w", err))
 	}
 
 	sort.Slice(ep, func(i, j int) bool {
@@ -145,7 +146,7 @@ func TestIndexRW_Create_Open(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, iw.Close())
 
-	ir, err := NewFileReader(fn)
+	ir, err := NewFileReader(fn, DecodePostingsRaw)
 	require.NoError(t, err)
 	require.NoError(t, ir.Close())
 
@@ -156,44 +157,19 @@ func TestIndexRW_Create_Open(t *testing.T) {
 	require.NoError(t, err)
 	f.Close()
 
-	_, err = NewFileReader(dir)
+	_, err = NewFileReader(dir, DecodePostingsRaw)
 	require.Error(t, err)
 }
 
 func TestIndexRW_Postings(t *testing.T) {
-	dir := t.TempDir()
 	ctx := context.Background()
-
-	fn := filepath.Join(dir, indexFilename)
-
-	iw, err := NewWriter(context.Background(), fn)
-	require.NoError(t, err)
-
-	series := []labels.Labels{
-		labels.FromStrings("a", "1", "b", "1"),
-		labels.FromStrings("a", "1", "b", "2"),
-		labels.FromStrings("a", "1", "b", "3"),
-		labels.FromStrings("a", "1", "b", "4"),
+	var input indexWriterSeriesSlice
+	for i := 1; i < 5; i++ {
+		input = append(input, &indexWriterSeries{
+			labels: labels.FromStrings("a", "1", "b", strconv.Itoa(i)),
+		})
 	}
-
-	require.NoError(t, iw.AddSymbol("1"))
-	require.NoError(t, iw.AddSymbol("2"))
-	require.NoError(t, iw.AddSymbol("3"))
-	require.NoError(t, iw.AddSymbol("4"))
-	require.NoError(t, iw.AddSymbol("a"))
-	require.NoError(t, iw.AddSymbol("b"))
-
-	// Postings lists are only written if a series with the respective
-	// reference was added before.
-	require.NoError(t, iw.AddSeries(1, series[0]))
-	require.NoError(t, iw.AddSeries(2, series[1]))
-	require.NoError(t, iw.AddSeries(3, series[2]))
-	require.NoError(t, iw.AddSeries(4, series[3]))
-
-	require.NoError(t, iw.Close())
-
-	ir, err := NewFileReader(fn)
-	require.NoError(t, err)
+	ir, fn, _ := createFileReader(ctx, t, input)
 
 	p, err := ir.Postings(ctx, "a", "1")
 	require.NoError(t, err)
@@ -205,8 +181,8 @@ func TestIndexRW_Postings(t *testing.T) {
 		err := ir.Series(p.At(), &builder, &c)
 
 		require.NoError(t, err)
-		require.Equal(t, 0, len(c))
-		require.Equal(t, series[i], builder.Labels())
+		require.Empty(t, c)
+		testutil.RequireEqual(t, input[i].labels, builder.Labels())
 	}
 	require.NoError(t, p.Err())
 
@@ -241,46 +217,70 @@ func TestIndexRW_Postings(t *testing.T) {
 		"b": {"1", "2", "3", "4"},
 	}, labelIndices)
 
-	require.NoError(t, ir.Close())
+	t.Run("ShardedPostings()", func(t *testing.T) {
+		ir, err := NewFileReader(fn, DecodePostingsRaw)
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			require.NoError(t, ir.Close())
+		})
+
+		// List all postings for a given label value. This is what we expect to get
+		// in output from all shards.
+		p, err = ir.Postings(ctx, "a", "1")
+		require.NoError(t, err)
+
+		var expected []storage.SeriesRef
+		for p.Next() {
+			expected = append(expected, p.At())
+		}
+		require.NoError(t, p.Err())
+		require.NotEmpty(t, expected)
+
+		// Query the same postings for each shard.
+		const shardCount = uint64(4)
+		actualShards := make(map[uint64][]storage.SeriesRef)
+		actualPostings := make([]storage.SeriesRef, 0, len(expected))
+
+		for shardIndex := uint64(0); shardIndex < shardCount; shardIndex++ {
+			p, err = ir.Postings(ctx, "a", "1")
+			require.NoError(t, err)
+
+			p = ir.ShardedPostings(p, shardIndex, shardCount)
+			for p.Next() {
+				ref := p.At()
+
+				actualShards[shardIndex] = append(actualShards[shardIndex], ref)
+				actualPostings = append(actualPostings, ref)
+			}
+			require.NoError(t, p.Err())
+		}
+
+		// We expect the postings merged out of shards is the exact same of the non sharded ones.
+		require.ElementsMatch(t, expected, actualPostings)
+
+		// We expect the series in each shard are the expected ones.
+		for shardIndex, ids := range actualShards {
+			for _, id := range ids {
+				var lbls labels.ScratchBuilder
+
+				require.NoError(t, ir.Series(id, &lbls, nil))
+				require.Equal(t, shardIndex, labels.StableHash(lbls.Labels())%shardCount)
+			}
+		}
+	})
 }
 
 func TestPostingsMany(t *testing.T) {
-	dir := t.TempDir()
 	ctx := context.Background()
-
-	fn := filepath.Join(dir, indexFilename)
-
-	iw, err := NewWriter(context.Background(), fn)
-	require.NoError(t, err)
-
 	// Create a label in the index which has 999 values.
-	symbols := map[string]struct{}{}
-	series := []labels.Labels{}
+	var input indexWriterSeriesSlice
 	for i := 1; i < 1000; i++ {
 		v := fmt.Sprintf("%03d", i)
-		series = append(series, labels.FromStrings("i", v, "foo", "bar"))
-		symbols[v] = struct{}{}
+		input = append(input, &indexWriterSeries{
+			labels: labels.FromStrings("i", v, "foo", "bar"),
+		})
 	}
-	symbols["i"] = struct{}{}
-	symbols["foo"] = struct{}{}
-	symbols["bar"] = struct{}{}
-	syms := []string{}
-	for s := range symbols {
-		syms = append(syms, s)
-	}
-	sort.Strings(syms)
-	for _, s := range syms {
-		require.NoError(t, iw.AddSymbol(s))
-	}
-
-	for i, s := range series {
-		require.NoError(t, iw.AddSeries(storage.SeriesRef(i), s))
-	}
-	require.NoError(t, iw.Close())
-
-	ir, err := NewFileReader(fn)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, ir.Close()) }()
+	ir, _, symbols := createFileReader(ctx, t, input)
 
 	cases := []struct {
 		in []string
@@ -331,39 +331,29 @@ func TestPostingsMany(t *testing.T) {
 				exp = append(exp, e)
 			}
 		}
-		require.Equal(t, exp, got, fmt.Sprintf("input: %v", c.in))
+		require.Equalf(t, exp, got, "input: %v", c.in)
 	}
 }
 
 func TestPersistence_index_e2e(t *testing.T) {
-	dir := t.TempDir()
 	ctx := context.Background()
-
 	lbls, err := labels.ReadLabels(filepath.Join("..", "testdata", "20kseries.json"), 20000)
 	require.NoError(t, err)
-
 	// Sort labels as the index writer expects series in sorted order.
 	sort.Sort(labels.Slice(lbls))
 
-	symbols := map[string]struct{}{}
-	for _, lset := range lbls {
-		lset.Range(func(l labels.Label) {
-			symbols[l.Name] = struct{}{}
-			symbols[l.Value] = struct{}{}
-		})
-	}
-
 	var input indexWriterSeriesSlice
-
+	ref := uint64(0)
 	// Generate ChunkMetas for every label set.
 	for i, lset := range lbls {
 		var metas []chunks.Meta
 
 		for j := 0; j <= (i % 20); j++ {
+			ref++
 			metas = append(metas, chunks.Meta{
 				MinTime: int64(j * 10000),
-				MaxTime: int64((j + 1) * 10000),
-				Ref:     chunks.ChunkRef(rand.Uint64()),
+				MaxTime: int64((j+1)*10000) - 1,
+				Ref:     chunks.ChunkRef(ref),
 				Chunk:   chunkenc.NewXORChunk(),
 			})
 		}
@@ -373,17 +363,7 @@ func TestPersistence_index_e2e(t *testing.T) {
 		})
 	}
 
-	iw, err := NewWriter(context.Background(), filepath.Join(dir, indexFilename))
-	require.NoError(t, err)
-
-	syms := []string{}
-	for s := range symbols {
-		syms = append(syms, s)
-	}
-	sort.Strings(syms)
-	for _, s := range syms {
-		require.NoError(t, iw.AddSymbol(s))
-	}
+	ir, _, _ := createFileReader(ctx, t, input)
 
 	// Population procedure as done by compaction.
 	var (
@@ -394,8 +374,6 @@ func TestPersistence_index_e2e(t *testing.T) {
 	mi := newMockIndex()
 
 	for i, s := range input {
-		err = iw.AddSeries(storage.SeriesRef(i), s.labels, s.chunks...)
-		require.NoError(t, err)
 		require.NoError(t, mi.AddSeries(storage.SeriesRef(i), s.labels, s.chunks...))
 
 		s.labels.Range(func(l labels.Label) {
@@ -408,12 +386,6 @@ func TestPersistence_index_e2e(t *testing.T) {
 		})
 		postings.Add(storage.SeriesRef(i), s.labels)
 	}
-
-	err = iw.Close()
-	require.NoError(t, err)
-
-	ir, err := NewFileReader(filepath.Join(dir, indexFilename))
-	require.NoError(t, err)
 
 	for p := range mi.postings {
 		gotp, err := ir.Postings(ctx, p.Name, p.Value)
@@ -435,7 +407,7 @@ func TestPersistence_index_e2e(t *testing.T) {
 
 			err = mi.Series(expp.At(), &eBuilder, &expchks)
 			require.NoError(t, err)
-			require.Equal(t, eBuilder.Labels(), builder.Labels())
+			testutil.RequireEqual(t, eBuilder.Labels(), builder.Labels())
 			require.Equal(t, expchks, chks)
 		}
 		require.False(t, expp.Next(), "Expected no more postings for %q=%q", p.Name, p.Value)
@@ -470,8 +442,6 @@ func TestPersistence_index_e2e(t *testing.T) {
 	}
 	sort.Strings(expSymbols)
 	require.Equal(t, expSymbols, gotSymbols)
-
-	require.NoError(t, ir.Close())
 }
 
 func TestWriter_ShouldReturnErrorOnSeriesWithDuplicatedLabelNames(t *testing.T) {
@@ -499,7 +469,7 @@ func TestDecbufUvarintWithInvalidBuffer(t *testing.T) {
 func TestReaderWithInvalidBuffer(t *testing.T) {
 	b := realByteSlice([]byte{0x81, 0x81, 0x81, 0x81, 0x81, 0x81})
 
-	_, err := NewReader(b)
+	_, err := NewReader(b, DecodePostingsRaw)
 	require.Error(t, err)
 }
 
@@ -511,7 +481,7 @@ func TestNewFileReaderErrorNoOpenFiles(t *testing.T) {
 	err := os.WriteFile(idxName, []byte("corrupted contents"), 0o666)
 	require.NoError(t, err)
 
-	_, err = NewFileReader(idxName)
+	_, err = NewFileReader(idxName, DecodePostingsRaw)
 	require.Error(t, err)
 
 	// dir.Close will fail on Win if idxName fd is not closed on error path.
@@ -519,7 +489,6 @@ func TestNewFileReaderErrorNoOpenFiles(t *testing.T) {
 }
 
 func TestSymbols(t *testing.T) {
-	ctx := context.Background()
 	buf := encoding.Encbuf{}
 
 	// Add prefix to the buffer to simulate symbols as part of larger buffer.
@@ -542,11 +511,11 @@ func TestSymbols(t *testing.T) {
 	require.Equal(t, 32, s.Size())
 
 	for i := 99; i >= 0; i-- {
-		s, err := s.Lookup(ctx, uint32(i))
+		s, err := s.Lookup(uint32(i))
 		require.NoError(t, err)
 		require.Equal(t, string(rune(i)), s)
 	}
-	_, err = s.Lookup(ctx, 100)
+	_, err = s.Lookup(100)
 	require.Error(t, err)
 
 	for i := 99; i >= 0; i-- {
@@ -566,7 +535,212 @@ func TestSymbols(t *testing.T) {
 	require.NoError(t, iter.Err())
 }
 
+func BenchmarkReader_ShardedPostings(b *testing.B) {
+	const (
+		numSeries = 10000
+		numShards = 16
+	)
+
+	ctx := context.Background()
+	var input indexWriterSeriesSlice
+	for i := 1; i <= numSeries; i++ {
+		input = append(input, &indexWriterSeries{
+			labels: labels.FromStrings("const", fmt.Sprintf("%10d", 1), "unique", fmt.Sprintf("%10d", i)),
+		})
+	}
+	ir, _, _ := createFileReader(ctx, b, input)
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		allPostings, err := ir.Postings(ctx, "const", fmt.Sprintf("%10d", 1))
+		require.NoError(b, err)
+
+		ir.ShardedPostings(allPostings, uint64(n%numShards), numShards)
+	}
+}
+
 func TestDecoder_Postings_WrongInput(t *testing.T) {
-	_, _, err := (&Decoder{}).Postings([]byte("the cake is a lie"))
+	d := encoding.Decbuf{B: []byte("the cake is a lie")}
+	_, _, err := (&Decoder{DecodePostings: DecodePostingsRaw}).DecodePostings(d)
 	require.Error(t, err)
+}
+
+func TestChunksRefOrdering(t *testing.T) {
+	dir := t.TempDir()
+
+	idx, err := NewWriter(context.Background(), filepath.Join(dir, "index"))
+	require.NoError(t, err)
+
+	require.NoError(t, idx.AddSymbol("1"))
+	require.NoError(t, idx.AddSymbol("2"))
+	require.NoError(t, idx.AddSymbol("__name__"))
+
+	c50 := chunks.Meta{Ref: 50}
+	c100 := chunks.Meta{Ref: 100}
+	c200 := chunks.Meta{Ref: 200}
+
+	require.NoError(t, idx.AddSeries(1, labels.FromStrings("__name__", "1"), c100))
+	require.EqualError(t, idx.AddSeries(2, labels.FromStrings("__name__", "2"), c50), "unsorted chunk reference: 50, previous: 100")
+	require.NoError(t, idx.AddSeries(2, labels.FromStrings("__name__", "2"), c200))
+	require.NoError(t, idx.Close())
+}
+
+func TestChunksTimeOrdering(t *testing.T) {
+	dir := t.TempDir()
+
+	idx, err := NewWriter(context.Background(), filepath.Join(dir, "index"))
+	require.NoError(t, err)
+
+	require.NoError(t, idx.AddSymbol("1"))
+	require.NoError(t, idx.AddSymbol("2"))
+	require.NoError(t, idx.AddSymbol("__name__"))
+
+	require.NoError(t, idx.AddSeries(1, labels.FromStrings("__name__", "1"),
+		chunks.Meta{Ref: 1, MinTime: 0, MaxTime: 10}, // Also checks that first chunk can have MinTime: 0.
+		chunks.Meta{Ref: 2, MinTime: 11, MaxTime: 20},
+		chunks.Meta{Ref: 3, MinTime: 21, MaxTime: 30},
+	))
+
+	require.EqualError(t, idx.AddSeries(1, labels.FromStrings("__name__", "2"),
+		chunks.Meta{Ref: 10, MinTime: 0, MaxTime: 10},
+		chunks.Meta{Ref: 20, MinTime: 10, MaxTime: 20},
+	), "chunk minT 10 is not higher than previous chunk maxT 10")
+
+	require.EqualError(t, idx.AddSeries(1, labels.FromStrings("__name__", "2"),
+		chunks.Meta{Ref: 10, MinTime: 100, MaxTime: 30},
+	), "chunk maxT 30 is less than minT 100")
+
+	require.NoError(t, idx.Close())
+}
+
+func TestReader_PostingsForLabelMatching(t *testing.T) {
+	const seriesCount = 9
+	var input indexWriterSeriesSlice
+	for i := 1; i <= seriesCount; i++ {
+		input = append(input, &indexWriterSeries{
+			labels: labels.FromStrings("__name__", strconv.Itoa(i)),
+			chunks: []chunks.Meta{
+				{Ref: 1, MinTime: 0, MaxTime: 10},
+			},
+		})
+	}
+	ir, _, _ := createFileReader(context.Background(), t, input)
+
+	p := ir.PostingsForLabelMatching(context.Background(), "__name__", func(v string) bool {
+		iv, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		return iv%2 == 0
+	})
+	require.NoError(t, p.Err())
+	refs, err := ExpandPostings(p)
+	require.NoError(t, err)
+	require.Equal(t, []storage.SeriesRef{4, 6, 8, 10}, refs)
+}
+
+func TestReader_PostingsForAllLabelValues(t *testing.T) {
+	const seriesCount = 9
+	var input indexWriterSeriesSlice
+	for i := 1; i <= seriesCount; i++ {
+		input = append(input, &indexWriterSeries{
+			labels: labels.FromStrings("__name__", strconv.Itoa(i)),
+			chunks: []chunks.Meta{
+				{Ref: 1, MinTime: 0, MaxTime: 10},
+			},
+		})
+	}
+	ir, _, _ := createFileReader(context.Background(), t, input)
+
+	p := ir.PostingsForAllLabelValues(context.Background(), "__name__")
+	require.NoError(t, p.Err())
+	refs, err := ExpandPostings(p)
+	require.NoError(t, err)
+	require.Equal(t, []storage.SeriesRef{3, 4, 5, 6, 7, 8, 9, 10, 11}, refs)
+}
+
+func TestReader_PostingsForLabelMatchingHonorsContextCancel(t *testing.T) {
+	const seriesCount = 1000
+	var input indexWriterSeriesSlice
+	for i := 1; i <= seriesCount; i++ {
+		input = append(input, &indexWriterSeries{
+			labels: labels.FromStrings("__name__", fmt.Sprintf("%4d", i)),
+			chunks: []chunks.Meta{
+				{Ref: 1, MinTime: 0, MaxTime: 10},
+			},
+		})
+	}
+	ir, _, _ := createFileReader(context.Background(), t, input)
+
+	failAfter := uint64(seriesCount / 2) // Fail after processing half of the series.
+	ctx := &testutil.MockContextErrAfter{FailAfter: failAfter}
+	p := ir.PostingsForLabelMatching(ctx, "__name__", func(string) bool {
+		return true
+	})
+	require.Error(t, p.Err())
+	require.Equal(t, failAfter, ctx.Count())
+}
+
+func TestReader_LabelNamesForHonorsContextCancel(t *testing.T) {
+	const seriesCount = 1000
+	var input indexWriterSeriesSlice
+	for i := 1; i <= seriesCount; i++ {
+		input = append(input, &indexWriterSeries{
+			labels: labels.FromStrings(labels.MetricName, fmt.Sprintf("%4d", i)),
+			chunks: []chunks.Meta{
+				{Ref: 1, MinTime: 0, MaxTime: 10},
+			},
+		})
+	}
+	ir, _, _ := createFileReader(context.Background(), t, input)
+
+	name, value := AllPostingsKey()
+	p, err := ir.Postings(context.Background(), name, value)
+	require.NoError(t, err)
+	// We check context cancellation every 128 iterations so 3 will fail after
+	// iterating 3 * 128 series.
+	failAfter := uint64(3)
+	ctx := &testutil.MockContextErrAfter{FailAfter: failAfter}
+	_, err = ir.LabelNamesFor(ctx, p)
+	require.Error(t, err)
+	require.Equal(t, failAfter, ctx.Count())
+}
+
+// createFileReader creates a temporary index file. It writes the provided input to this file.
+// It returns a Reader for this file, the file's name, and the symbol map.
+func createFileReader(ctx context.Context, tb testing.TB, input indexWriterSeriesSlice) (*Reader, string, map[string]struct{}) {
+	tb.Helper()
+
+	fn := filepath.Join(tb.TempDir(), indexFilename)
+
+	iw, err := NewWriter(ctx, fn)
+	require.NoError(tb, err)
+
+	symbols := map[string]struct{}{}
+	for _, s := range input {
+		s.labels.Range(func(l labels.Label) {
+			symbols[l.Name] = struct{}{}
+			symbols[l.Value] = struct{}{}
+		})
+	}
+
+	syms := []string{}
+	for s := range symbols {
+		syms = append(syms, s)
+	}
+	slices.Sort(syms)
+	for _, s := range syms {
+		require.NoError(tb, iw.AddSymbol(s))
+	}
+	for i, s := range input {
+		require.NoError(tb, iw.AddSeries(storage.SeriesRef(i), s.labels, s.chunks...))
+	}
+	require.NoError(tb, iw.Close())
+
+	ir, err := NewFileReader(fn, DecodePostingsRaw)
+	require.NoError(tb, err)
+	tb.Cleanup(func() {
+		require.NoError(tb, ir.Close())
+	})
+	return ir, fn, symbols
 }

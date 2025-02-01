@@ -180,9 +180,9 @@ func TestMergeQuerierWithChainMerger(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var p Querier
+			var p []Querier
 			if tc.primaryQuerierSeries != nil {
-				p = &mockQuerier{toReturn: tc.primaryQuerierSeries}
+				p = append(p, &mockQuerier{toReturn: tc.primaryQuerierSeries})
 			}
 			var qs []Querier
 			for _, in := range tc.querierSeries {
@@ -190,7 +190,7 @@ func TestMergeQuerierWithChainMerger(t *testing.T) {
 			}
 			qs = append(qs, tc.extraQueriers...)
 
-			mergedQuerier := NewMergeQuerier([]Querier{p}, qs, ChainedSeriesMerge).Select(context.Background(), false, nil)
+			mergedQuerier := NewMergeQuerier(p, qs, ChainedSeriesMerge).Select(context.Background(), false, nil)
 
 			// Get all merged series upfront to make sure there are no incorrectly retained shared
 			// buffers causing bugs.
@@ -355,18 +355,18 @@ func TestMergeChunkQuerierWithNoVerticalChunkSeriesMerger(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var p ChunkQuerier
+			var p []ChunkQuerier
 			if tc.primaryChkQuerierSeries != nil {
-				p = &mockChunkQurier{toReturn: tc.primaryChkQuerierSeries}
+				p = append(p, &mockChunkQuerier{toReturn: tc.primaryChkQuerierSeries})
 			}
 
 			var qs []ChunkQuerier
 			for _, in := range tc.chkQuerierSeries {
-				qs = append(qs, &mockChunkQurier{toReturn: in})
+				qs = append(qs, &mockChunkQuerier{toReturn: in})
 			}
 			qs = append(qs, tc.extraQueriers...)
 
-			merged := NewMergeChunkQuerier([]ChunkQuerier{p}, qs, NewCompactingChunkSeriesMerger(nil)).Select(context.Background(), false, nil)
+			merged := NewMergeChunkQuerier(p, qs, NewCompactingChunkSeriesMerger(nil)).Select(context.Background(), false, nil)
 			for merged.Next() {
 				require.True(t, tc.expected.Next(), "Expected Next() to be true")
 				actualSeries := merged.At()
@@ -377,7 +377,6 @@ func TestMergeChunkQuerierWithNoVerticalChunkSeriesMerger(t *testing.T) {
 				actChks, actErr := ExpandChunks(actualSeries.Iterator(nil))
 				require.Equal(t, expErr, actErr)
 				require.Equal(t, expChks, actChks)
-
 			}
 			require.NoError(t, merged.Err())
 			require.False(t, tc.expected.Next(), "Expected Next() to be false")
@@ -386,13 +385,13 @@ func TestMergeChunkQuerierWithNoVerticalChunkSeriesMerger(t *testing.T) {
 }
 
 func histogramSample(ts int64, hint histogram.CounterResetHint) hSample {
-	h := tsdbutil.GenerateTestHistogram(int(ts + 1))
+	h := tsdbutil.GenerateTestHistogram(ts + 1)
 	h.CounterResetHint = hint
 	return hSample{t: ts, h: h}
 }
 
 func floatHistogramSample(ts int64, hint histogram.CounterResetHint) fhSample {
-	fh := tsdbutil.GenerateTestFloatHistogram(int(ts + 1))
+	fh := tsdbutil.GenerateTestFloatHistogram(ts + 1)
 	fh.CounterResetHint = hint
 	return fhSample{t: ts, fh: fh}
 }
@@ -853,10 +852,83 @@ func TestConcatenatingChunkSeriesMerger(t *testing.T) {
 	}
 }
 
-type mockQuerier struct {
-	LabelQuerier
+func TestConcatenatingChunkIterator(t *testing.T) {
+	chunk1, err := chunks.ChunkFromSamples([]chunks.Sample{fSample{t: 1, f: 10}})
+	require.NoError(t, err)
+	chunk2, err := chunks.ChunkFromSamples([]chunks.Sample{fSample{t: 2, f: 20}})
+	require.NoError(t, err)
+	chunk3, err := chunks.ChunkFromSamples([]chunks.Sample{fSample{t: 3, f: 30}})
+	require.NoError(t, err)
 
-	toReturn []Series
+	testError := errors.New("something went wrong")
+
+	testCases := map[string]struct {
+		iterators      []chunks.Iterator
+		expectedChunks []chunks.Meta
+		expectedError  error
+	}{
+		"many successful iterators": {
+			iterators: []chunks.Iterator{
+				NewListChunkSeriesIterator(chunk1, chunk2),
+				NewListChunkSeriesIterator(chunk3),
+			},
+			expectedChunks: []chunks.Meta{chunk1, chunk2, chunk3},
+		},
+		"single failing iterator": {
+			iterators: []chunks.Iterator{
+				errChunksIterator{err: testError},
+			},
+			expectedError: testError,
+		},
+		"some failing and some successful iterators": {
+			iterators: []chunks.Iterator{
+				NewListChunkSeriesIterator(chunk1, chunk2),
+				errChunksIterator{err: testError},
+				NewListChunkSeriesIterator(chunk3),
+			},
+			expectedChunks: []chunks.Meta{chunk1, chunk2}, // Should stop before advancing to last iterator.
+			expectedError:  testError,
+		},
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			it := concatenatingChunkIterator{iterators: testCase.iterators}
+			var chks []chunks.Meta
+
+			for it.Next() {
+				chks = append(chks, it.At())
+			}
+
+			require.Equal(t, testCase.expectedChunks, chks)
+
+			if testCase.expectedError == nil {
+				require.NoError(t, it.Err())
+			} else {
+				require.EqualError(t, it.Err(), testCase.expectedError.Error())
+			}
+		})
+	}
+}
+
+type mockQuerier struct {
+	mtx sync.Mutex
+
+	toReturn []Series // Response for Select.
+
+	closed                bool
+	labelNamesCalls       int
+	labelNamesRequested   []labelNameRequest
+	sortedSeriesRequested []bool
+
+	resp     []string // Response for LabelNames and LabelValues; turned into Select response if toReturn is not supplied.
+	warnings annotations.Annotations
+	err      error
+}
+
+type labelNameRequest struct {
+	name     string
+	matchers []*labels.Matcher
 }
 
 type seriesByLabel []Series
@@ -866,16 +938,50 @@ func (a seriesByLabel) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a seriesByLabel) Less(i, j int) bool { return labels.Compare(a[i].Labels(), a[j].Labels()) < 0 }
 
 func (m *mockQuerier) Select(_ context.Context, sortSeries bool, _ *SelectHints, _ ...*labels.Matcher) SeriesSet {
-	cpy := make([]Series, len(m.toReturn))
-	copy(cpy, m.toReturn)
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	m.sortedSeriesRequested = append(m.sortedSeriesRequested, sortSeries)
+
+	var ret []Series
+	if len(m.toReturn) > 0 {
+		ret = make([]Series, len(m.toReturn))
+		copy(ret, m.toReturn)
+	} else if len(m.resp) > 0 {
+		ret = make([]Series, 0, len(m.resp))
+		for _, l := range m.resp {
+			ret = append(ret, NewListSeries(labels.FromStrings("test", l), nil))
+		}
+	}
 	if sortSeries {
-		sort.Sort(seriesByLabel(cpy))
+		sort.Sort(seriesByLabel(ret))
 	}
 
-	return NewMockSeriesSet(cpy...)
+	return &mockSeriesSet{idx: -1, series: ret, warnings: m.warnings, err: m.err}
 }
 
-type mockChunkQurier struct {
+func (m *mockQuerier) LabelValues(_ context.Context, name string, hints *LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+	m.mtx.Lock()
+	m.labelNamesRequested = append(m.labelNamesRequested, labelNameRequest{
+		name:     name,
+		matchers: matchers,
+	})
+	m.mtx.Unlock()
+	return m.resp, m.warnings, m.err
+}
+
+func (m *mockQuerier) LabelNames(context.Context, *LabelHints, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
+	m.mtx.Lock()
+	m.labelNamesCalls++
+	m.mtx.Unlock()
+	return m.resp, m.warnings, m.err
+}
+
+func (m *mockQuerier) Close() error {
+	m.closed = true
+	return nil
+}
+
+type mockChunkQuerier struct {
 	LabelQuerier
 
 	toReturn []ChunkSeries
@@ -889,7 +995,7 @@ func (a chunkSeriesByLabel) Less(i, j int) bool {
 	return labels.Compare(a[i].Labels(), a[j].Labels()) < 0
 }
 
-func (m *mockChunkQurier) Select(_ context.Context, sortSeries bool, _ *SelectHints, _ ...*labels.Matcher) ChunkSeriesSet {
+func (m *mockChunkQuerier) Select(_ context.Context, sortSeries bool, _ *SelectHints, _ ...*labels.Matcher) ChunkSeriesSet {
 	cpy := make([]ChunkSeries, len(m.toReturn))
 	copy(cpy, m.toReturn)
 	if sortSeries {
@@ -902,6 +1008,9 @@ func (m *mockChunkQurier) Select(_ context.Context, sortSeries bool, _ *SelectHi
 type mockSeriesSet struct {
 	idx    int
 	series []Series
+
+	warnings annotations.Annotations
+	err      error
 }
 
 func NewMockSeriesSet(series ...Series) SeriesSet {
@@ -912,15 +1021,18 @@ func NewMockSeriesSet(series ...Series) SeriesSet {
 }
 
 func (m *mockSeriesSet) Next() bool {
+	if m.err != nil {
+		return false
+	}
 	m.idx++
 	return m.idx < len(m.series)
 }
 
 func (m *mockSeriesSet) At() Series { return m.series[m.idx] }
 
-func (m *mockSeriesSet) Err() error { return nil }
+func (m *mockSeriesSet) Err() error { return m.err }
 
-func (m *mockSeriesSet) Warnings() annotations.Annotations { return nil }
+func (m *mockSeriesSet) Warnings() annotations.Annotations { return m.warnings }
 
 type mockChunkSeriesSet struct {
 	idx    int
@@ -1114,10 +1226,10 @@ func TestChainSampleIteratorSeek(t *testing.T) {
 					t, f := merged.At()
 					actual = append(actual, fSample{t, f})
 				case chunkenc.ValHistogram:
-					t, h := merged.AtHistogram()
+					t, h := merged.AtHistogram(nil)
 					actual = append(actual, hSample{t, h})
 				case chunkenc.ValFloatHistogram:
-					t, fh := merged.AtFloatHistogram()
+					t, fh := merged.AtFloatHistogram(nil)
 					actual = append(actual, fhSample{t, fh})
 				}
 				s, err := ExpandSamples(merged, nil)
@@ -1127,6 +1239,35 @@ func TestChainSampleIteratorSeek(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestChainSampleIteratorSeekFailingIterator(t *testing.T) {
+	merged := ChainSampleIteratorFromIterators(nil, []chunkenc.Iterator{
+		NewListSeriesIterator(samples{fSample{0, 0.1}, fSample{1, 1.1}, fSample{2, 2.1}}),
+		errIterator{errors.New("something went wrong")},
+	})
+
+	require.Equal(t, chunkenc.ValNone, merged.Seek(0))
+	require.EqualError(t, merged.Err(), "something went wrong")
+}
+
+func TestChainSampleIteratorNextImmediatelyFailingIterator(t *testing.T) {
+	merged := ChainSampleIteratorFromIterators(nil, []chunkenc.Iterator{
+		NewListSeriesIterator(samples{fSample{0, 0.1}, fSample{1, 1.1}, fSample{2, 2.1}}),
+		errIterator{errors.New("something went wrong")},
+	})
+
+	require.Equal(t, chunkenc.ValNone, merged.Next())
+	require.EqualError(t, merged.Err(), "something went wrong")
+
+	// Next() does some special handling for the first iterator, so make sure it handles the first iterator returning an error too.
+	merged = ChainSampleIteratorFromIterators(nil, []chunkenc.Iterator{
+		errIterator{errors.New("something went wrong")},
+		NewListSeriesIterator(samples{fSample{0, 0.1}, fSample{1, 1.1}, fSample{2, 2.1}}),
+	})
+
+	require.Equal(t, chunkenc.ValNone, merged.Next())
+	require.EqualError(t, merged.Err(), "something went wrong")
 }
 
 func TestChainSampleIteratorSeekHistogramCounterResetHint(t *testing.T) {
@@ -1171,10 +1312,10 @@ func TestChainSampleIteratorSeekHistogramCounterResetHint(t *testing.T) {
 					t, f := merged.At()
 					actual = append(actual, fSample{t, f})
 				case chunkenc.ValHistogram:
-					t, h := merged.AtHistogram()
+					t, h := merged.AtHistogram(nil)
 					actual = append(actual, hSample{t, h})
 				case chunkenc.ValFloatHistogram:
-					t, fh := merged.AtFloatHistogram()
+					t, fh := merged.AtFloatHistogram(nil)
 					actual = append(actual, fhSample{t, fh})
 				}
 				s, err := ExpandSamples(merged, nil)
@@ -1204,7 +1345,7 @@ func makeMergeSeriesSet(serieses [][]Series) SeriesSet {
 	for i, s := range serieses {
 		seriesSets[i] = &genericSeriesSetAdapter{NewMockSeriesSet(s...)}
 	}
-	return &seriesSetAdapter{newGenericMergeSeriesSet(seriesSets, (&seriesMergerAdapter{VerticalSeriesMergeFunc: ChainedSeriesMerge}).Merge)}
+	return &seriesSetAdapter{newGenericMergeSeriesSet(seriesSets, 0, (&seriesMergerAdapter{VerticalSeriesMergeFunc: ChainedSeriesMerge}).Merge)}
 }
 
 func benchmarkDrain(b *testing.B, makeSeriesSet func() SeriesSet) {
@@ -1249,105 +1390,73 @@ func BenchmarkMergeSeriesSet(b *testing.B) {
 	}
 }
 
-type mockGenericQuerier struct {
-	mtx sync.Mutex
+func BenchmarkMergeLabelValuesWithLimit(b *testing.B) {
+	var queriers []genericQuerier
 
-	closed                bool
-	labelNamesCalls       int
-	labelNamesRequested   []labelNameRequest
-	sortedSeriesRequested []bool
+	for i := 0; i < 5; i++ {
+		var lbls []string
+		for j := 0; j < 100000; j++ {
+			lbls = append(lbls, fmt.Sprintf("querier_%d_label_%d", i, j))
+		}
+		q := &mockQuerier{resp: lbls}
+		queriers = append(queriers, newGenericQuerierFrom(q))
+	}
 
-	resp     []string
-	warnings annotations.Annotations
-	err      error
-}
+	mergeQuerier := &mergeGenericQuerier{
+		queriers: queriers, // Assume querying 5 blocks.
+		mergeFn: func(l ...Labels) Labels {
+			return l[0]
+		},
+	}
 
-type labelNameRequest struct {
-	name     string
-	matchers []*labels.Matcher
-}
-
-func (m *mockGenericQuerier) Select(_ context.Context, b bool, _ *SelectHints, _ ...*labels.Matcher) genericSeriesSet {
-	m.mtx.Lock()
-	m.sortedSeriesRequested = append(m.sortedSeriesRequested, b)
-	m.mtx.Unlock()
-	return &mockGenericSeriesSet{resp: m.resp, warnings: m.warnings, err: m.err}
-}
-
-func (m *mockGenericQuerier) LabelValues(_ context.Context, name string, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
-	m.mtx.Lock()
-	m.labelNamesRequested = append(m.labelNamesRequested, labelNameRequest{
-		name:     name,
-		matchers: matchers,
+	b.Run("benchmark", func(b *testing.B) {
+		ctx := context.Background()
+		hints := &LabelHints{
+			Limit: 1000,
+		}
+		mergeQuerier.LabelValues(ctx, "name", hints)
 	})
-	m.mtx.Unlock()
-	return m.resp, m.warnings, m.err
 }
 
-func (m *mockGenericQuerier) LabelNames(context.Context, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
-	m.mtx.Lock()
-	m.labelNamesCalls++
-	m.mtx.Unlock()
-	return m.resp, m.warnings, m.err
-}
-
-func (m *mockGenericQuerier) Close() error {
-	m.closed = true
-	return nil
-}
-
-type mockGenericSeriesSet struct {
-	resp     []string
-	warnings annotations.Annotations
-	err      error
-
-	curr int
-}
-
-func (m *mockGenericSeriesSet) Next() bool {
-	if m.err != nil {
-		return false
+func visitMockQueriers(t *testing.T, qr Querier, f func(t *testing.T, q *mockQuerier)) int {
+	count := 0
+	switch x := qr.(type) {
+	case *mockQuerier:
+		count++
+		f(t, x)
+	case *querierAdapter:
+		count += visitMockQueriersInGenericQuerier(t, x.genericQuerier, f)
 	}
-	if m.curr >= len(m.resp) {
-		return false
+	return count
+}
+
+func visitMockQueriersInGenericQuerier(t *testing.T, g genericQuerier, f func(t *testing.T, q *mockQuerier)) int {
+	count := 0
+	switch x := g.(type) {
+	case *mergeGenericQuerier:
+		for _, q := range x.queriers {
+			count += visitMockQueriersInGenericQuerier(t, q, f)
+		}
+	case *genericQuerierAdapter:
+		// Visitor for chunkQuerier not implemented.
+		count += visitMockQueriers(t, x.q, f)
+	case *secondaryQuerier:
+		count += visitMockQueriersInGenericQuerier(t, x.genericQuerier, f)
 	}
-	m.curr++
-	return true
+	return count
 }
 
-func (m *mockGenericSeriesSet) Err() error                        { return m.err }
-func (m *mockGenericSeriesSet) Warnings() annotations.Annotations { return m.warnings }
-
-func (m *mockGenericSeriesSet) At() Labels {
-	return mockLabels(m.resp[m.curr-1])
-}
-
-type mockLabels string
-
-func (l mockLabels) Labels() labels.Labels {
-	return labels.FromStrings("test", string(l))
-}
-
-func unwrapMockGenericQuerier(t *testing.T, qr genericQuerier) *mockGenericQuerier {
-	m, ok := qr.(*mockGenericQuerier)
-	if !ok {
-		s, ok := qr.(*secondaryQuerier)
-		require.True(t, ok, "expected secondaryQuerier got something else")
-		m, ok = s.genericQuerier.(*mockGenericQuerier)
-		require.True(t, ok, "expected mockGenericQuerier got something else")
-	}
-	return m
-}
-
-func TestMergeGenericQuerierWithSecondaries_ErrorHandling(t *testing.T) {
+func TestMergeQuerierWithSecondaries_ErrorHandling(t *testing.T) {
 	var (
 		errStorage  = errors.New("storage error")
 		warnStorage = errors.New("storage warning")
 		ctx         = context.Background()
 	)
 	for _, tcase := range []struct {
-		name     string
-		queriers []genericQuerier
+		name        string
+		primaries   []Querier
+		secondaries []Querier
+		limit       int
 
 		expectedSelectsSeries []labels.Labels
 		expectedLabels        []string
@@ -1356,8 +1465,8 @@ func TestMergeGenericQuerierWithSecondaries_ErrorHandling(t *testing.T) {
 		expectedErrs     [4]error
 	}{
 		{
-			name:     "one successful primary querier",
-			queriers: []genericQuerier{&mockGenericQuerier{resp: []string{"a", "b"}, warnings: nil, err: nil}},
+			name:      "one successful primary querier",
+			primaries: []Querier{&mockQuerier{resp: []string{"a", "b"}, warnings: nil, err: nil}},
 			expectedSelectsSeries: []labels.Labels{
 				labels.FromStrings("test", "a"),
 				labels.FromStrings("test", "b"),
@@ -1366,9 +1475,9 @@ func TestMergeGenericQuerierWithSecondaries_ErrorHandling(t *testing.T) {
 		},
 		{
 			name: "multiple successful primary queriers",
-			queriers: []genericQuerier{
-				&mockGenericQuerier{resp: []string{"a", "b"}, warnings: nil, err: nil},
-				&mockGenericQuerier{resp: []string{"b", "c"}, warnings: nil, err: nil},
+			primaries: []Querier{
+				&mockQuerier{resp: []string{"a", "b"}, warnings: nil, err: nil},
+				&mockQuerier{resp: []string{"b", "c"}, warnings: nil, err: nil},
 			},
 			expectedSelectsSeries: []labels.Labels{
 				labels.FromStrings("test", "a"),
@@ -1379,15 +1488,17 @@ func TestMergeGenericQuerierWithSecondaries_ErrorHandling(t *testing.T) {
 		},
 		{
 			name:         "one failed primary querier",
-			queriers:     []genericQuerier{&mockGenericQuerier{warnings: nil, err: errStorage}},
+			primaries:    []Querier{&mockQuerier{warnings: nil, err: errStorage}},
 			expectedErrs: [4]error{errStorage, errStorage, errStorage, errStorage},
 		},
 		{
 			name: "one successful primary querier with successful secondaries",
-			queriers: []genericQuerier{
-				&mockGenericQuerier{resp: []string{"a", "b"}, warnings: nil, err: nil},
-				&secondaryQuerier{genericQuerier: &mockGenericQuerier{resp: []string{"b"}, warnings: nil, err: nil}},
-				&secondaryQuerier{genericQuerier: &mockGenericQuerier{resp: []string{"c"}, warnings: nil, err: nil}},
+			primaries: []Querier{
+				&mockQuerier{resp: []string{"a", "b"}, warnings: nil, err: nil},
+			},
+			secondaries: []Querier{
+				&mockQuerier{resp: []string{"b"}, warnings: nil, err: nil},
+				&mockQuerier{resp: []string{"c"}, warnings: nil, err: nil},
 			},
 			expectedSelectsSeries: []labels.Labels{
 				labels.FromStrings("test", "a"),
@@ -1398,10 +1509,12 @@ func TestMergeGenericQuerierWithSecondaries_ErrorHandling(t *testing.T) {
 		},
 		{
 			name: "one successful primary querier with empty response and successful secondaries",
-			queriers: []genericQuerier{
-				&mockGenericQuerier{resp: []string{}, warnings: nil, err: nil},
-				&secondaryQuerier{genericQuerier: &mockGenericQuerier{resp: []string{"b"}, warnings: nil, err: nil}},
-				&secondaryQuerier{genericQuerier: &mockGenericQuerier{resp: []string{"c"}, warnings: nil, err: nil}},
+			primaries: []Querier{
+				&mockQuerier{resp: []string{}, warnings: nil, err: nil},
+			},
+			secondaries: []Querier{
+				&mockQuerier{resp: []string{"b"}, warnings: nil, err: nil},
+				&mockQuerier{resp: []string{"c"}, warnings: nil, err: nil},
 			},
 			expectedSelectsSeries: []labels.Labels{
 				labels.FromStrings("test", "b"),
@@ -1411,19 +1524,42 @@ func TestMergeGenericQuerierWithSecondaries_ErrorHandling(t *testing.T) {
 		},
 		{
 			name: "one failed primary querier with successful secondaries",
-			queriers: []genericQuerier{
-				&mockGenericQuerier{warnings: nil, err: errStorage},
-				&secondaryQuerier{genericQuerier: &mockGenericQuerier{resp: []string{"b"}, warnings: nil, err: nil}},
-				&secondaryQuerier{genericQuerier: &mockGenericQuerier{resp: []string{"c"}, warnings: nil, err: nil}},
+			primaries: []Querier{
+				&mockQuerier{warnings: nil, err: errStorage},
+			},
+			secondaries: []Querier{
+				&mockQuerier{resp: []string{"b"}, warnings: nil, err: nil},
+				&mockQuerier{resp: []string{"c"}, warnings: nil, err: nil},
 			},
 			expectedErrs: [4]error{errStorage, errStorage, errStorage, errStorage},
 		},
 		{
+			name:      "nil primary querier with failed secondary",
+			primaries: nil,
+			secondaries: []Querier{
+				&mockQuerier{resp: []string{"b"}, warnings: nil, err: errStorage},
+			},
+			expectedLabels:   []string{},
+			expectedWarnings: annotations.New().Add(errStorage),
+		},
+		{
+			name:      "nil primary querier with two failed secondaries",
+			primaries: nil,
+			secondaries: []Querier{
+				&mockQuerier{resp: []string{"b"}, warnings: nil, err: errStorage},
+				&mockQuerier{resp: []string{"c"}, warnings: nil, err: errStorage},
+			},
+			expectedLabels:   []string{},
+			expectedWarnings: annotations.New().Add(errStorage),
+		},
+		{
 			name: "one successful primary querier with failed secondaries",
-			queriers: []genericQuerier{
-				&mockGenericQuerier{resp: []string{"a"}, warnings: nil, err: nil},
-				&secondaryQuerier{genericQuerier: &mockGenericQuerier{resp: []string{"b"}, warnings: nil, err: errStorage}},
-				&secondaryQuerier{genericQuerier: &mockGenericQuerier{resp: []string{"c"}, warnings: nil, err: errStorage}},
+			primaries: []Querier{
+				&mockQuerier{resp: []string{"a"}, warnings: nil, err: nil},
+			},
+			secondaries: []Querier{
+				&mockQuerier{resp: []string{"b"}, warnings: nil, err: errStorage},
+				&mockQuerier{resp: []string{"c"}, warnings: nil, err: errStorage},
 			},
 			expectedSelectsSeries: []labels.Labels{
 				labels.FromStrings("test", "a"),
@@ -1433,9 +1569,11 @@ func TestMergeGenericQuerierWithSecondaries_ErrorHandling(t *testing.T) {
 		},
 		{
 			name: "successful queriers with warnings",
-			queriers: []genericQuerier{
-				&mockGenericQuerier{resp: []string{"a"}, warnings: annotations.New().Add(warnStorage), err: nil},
-				&secondaryQuerier{genericQuerier: &mockGenericQuerier{resp: []string{"b"}, warnings: annotations.New().Add(warnStorage), err: nil}},
+			primaries: []Querier{
+				&mockQuerier{resp: []string{"a"}, warnings: annotations.New().Add(warnStorage), err: nil},
+			},
+			secondaries: []Querier{
+				&mockQuerier{resp: []string{"b"}, warnings: annotations.New().Add(warnStorage), err: nil},
 			},
 			expectedSelectsSeries: []labels.Labels{
 				labels.FromStrings("test", "a"),
@@ -1444,83 +1582,140 @@ func TestMergeGenericQuerierWithSecondaries_ErrorHandling(t *testing.T) {
 			expectedLabels:   []string{"a", "b"},
 			expectedWarnings: annotations.New().Add(warnStorage),
 		},
+		{
+			name: "successful queriers with limit",
+			primaries: []Querier{
+				&mockQuerier{resp: []string{"a", "d"}, warnings: annotations.New().Add(warnStorage), err: nil},
+			},
+			secondaries: []Querier{
+				&mockQuerier{resp: []string{"b", "c"}, warnings: annotations.New().Add(warnStorage), err: nil},
+			},
+			limit: 2,
+			expectedSelectsSeries: []labels.Labels{
+				labels.FromStrings("test", "a"),
+				labels.FromStrings("test", "b"),
+			},
+			expectedLabels:   []string{"a", "b"},
+			expectedWarnings: annotations.New().Add(warnStorage),
+		},
 	} {
-		t.Run(tcase.name, func(t *testing.T) {
-			q := &mergeGenericQuerier{
-				queriers: tcase.queriers,
-				mergeFn:  func(l ...Labels) Labels { return l[0] },
+		var labelHints *LabelHints
+		var selectHints *SelectHints
+		if tcase.limit > 0 {
+			labelHints = &LabelHints{
+				Limit: tcase.limit,
 			}
+			selectHints = &SelectHints{
+				Limit: tcase.limit,
+			}
+		}
+
+		t.Run(tcase.name, func(t *testing.T) {
+			q := NewMergeQuerier(tcase.primaries, tcase.secondaries, func(s ...Series) Series { return s[0] })
 
 			t.Run("Select", func(t *testing.T) {
-				res := q.Select(context.Background(), false, nil)
+				res := q.Select(context.Background(), false, selectHints)
 				var lbls []labels.Labels
 				for res.Next() {
 					lbls = append(lbls, res.At().Labels())
 				}
 				require.Subset(t, tcase.expectedWarnings, res.Warnings())
 				require.Equal(t, tcase.expectedErrs[0], res.Err())
-				require.True(t, errors.Is(res.Err(), tcase.expectedErrs[0]), "expected error doesn't match")
+				require.ErrorIs(t, res.Err(), tcase.expectedErrs[0], "expected error doesn't match")
 				require.Equal(t, tcase.expectedSelectsSeries, lbls)
 
-				for _, qr := range q.queriers {
-					m := unwrapMockGenericQuerier(t, qr)
-
-					exp := []bool{true}
-					if len(q.queriers) == 1 {
-						exp[0] = false
-					}
-					require.Equal(t, exp, m.sortedSeriesRequested)
-				}
+				n := visitMockQueriers(t, q, func(t *testing.T, m *mockQuerier) {
+					// Single queries should be unsorted; merged queries sorted.
+					exp := len(tcase.primaries)+len(tcase.secondaries) > 1
+					require.Equal(t, []bool{exp}, m.sortedSeriesRequested)
+				})
+				// Check we visited all queriers.
+				require.Equal(t, len(tcase.primaries)+len(tcase.secondaries), n)
 			})
 			t.Run("LabelNames", func(t *testing.T) {
-				res, w, err := q.LabelNames(ctx)
+				res, w, err := q.LabelNames(ctx, labelHints)
 				require.Subset(t, tcase.expectedWarnings, w)
-				require.True(t, errors.Is(err, tcase.expectedErrs[1]), "expected error doesn't match")
-				require.Equal(t, tcase.expectedLabels, res)
+				require.ErrorIs(t, err, tcase.expectedErrs[1], "expected error doesn't match")
+				requireEqualSlice(t, tcase.expectedLabels, res)
 
 				if err != nil {
 					return
 				}
-				for _, qr := range q.queriers {
-					m := unwrapMockGenericQuerier(t, qr)
-
+				visitMockQueriers(t, q, func(t *testing.T, m *mockQuerier) {
 					require.Equal(t, 1, m.labelNamesCalls)
-				}
+				})
 			})
 			t.Run("LabelValues", func(t *testing.T) {
-				res, w, err := q.LabelValues(ctx, "test")
+				res, w, err := q.LabelValues(ctx, "test", labelHints)
 				require.Subset(t, tcase.expectedWarnings, w)
-				require.True(t, errors.Is(err, tcase.expectedErrs[2]), "expected error doesn't match")
-				require.Equal(t, tcase.expectedLabels, res)
+				require.ErrorIs(t, err, tcase.expectedErrs[2], "expected error doesn't match")
+				requireEqualSlice(t, tcase.expectedLabels, res)
 
 				if err != nil {
 					return
 				}
-				for _, qr := range q.queriers {
-					m := unwrapMockGenericQuerier(t, qr)
-
+				visitMockQueriers(t, q, func(t *testing.T, m *mockQuerier) {
 					require.Equal(t, []labelNameRequest{{name: "test"}}, m.labelNamesRequested)
-				}
+				})
 			})
 			t.Run("LabelValuesWithMatchers", func(t *testing.T) {
 				matcher := labels.MustNewMatcher(labels.MatchEqual, "otherLabel", "someValue")
-				res, w, err := q.LabelValues(ctx, "test2", matcher)
+				res, w, err := q.LabelValues(ctx, "test2", labelHints, matcher)
 				require.Subset(t, tcase.expectedWarnings, w)
-				require.True(t, errors.Is(err, tcase.expectedErrs[3]), "expected error doesn't match")
-				require.Equal(t, tcase.expectedLabels, res)
+				require.ErrorIs(t, err, tcase.expectedErrs[3], "expected error doesn't match")
+				requireEqualSlice(t, tcase.expectedLabels, res)
 
 				if err != nil {
 					return
 				}
-				for _, qr := range q.queriers {
-					m := unwrapMockGenericQuerier(t, qr)
-
+				visitMockQueriers(t, q, func(t *testing.T, m *mockQuerier) {
 					require.Equal(t, []labelNameRequest{
 						{name: "test"},
 						{name: "test2", matchers: []*labels.Matcher{matcher}},
 					}, m.labelNamesRequested)
-				}
+				})
 			})
 		})
 	}
+}
+
+// Check slice but ignore difference between nil and empty.
+func requireEqualSlice[T any](t require.TestingT, a, b []T, msgAndArgs ...interface{}) {
+	if len(a) == 0 {
+		require.Empty(t, b, msgAndArgs...)
+	} else {
+		require.Equal(t, a, b, msgAndArgs...)
+	}
+}
+
+type errIterator struct {
+	err error
+}
+
+func (e errIterator) Next() chunkenc.ValueType {
+	return chunkenc.ValNone
+}
+
+func (e errIterator) Seek(t int64) chunkenc.ValueType {
+	return chunkenc.ValNone
+}
+
+func (e errIterator) At() (int64, float64) {
+	return 0, 0
+}
+
+func (e errIterator) AtHistogram(*histogram.Histogram) (int64, *histogram.Histogram) {
+	return 0, nil
+}
+
+func (e errIterator) AtFloatHistogram(*histogram.FloatHistogram) (int64, *histogram.FloatHistogram) {
+	return 0, nil
+}
+
+func (e errIterator) AtT() int64 {
+	return 0
+}
+
+func (e errIterator) Err() error {
+	return e.err
 }
