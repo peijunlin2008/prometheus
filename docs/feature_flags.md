@@ -107,6 +107,15 @@ Besides enabling this feature in Prometheus, start timestamps need to be exposed
 
 Enables the use of start timestamps (ST) in PromQL functions such as `rate()`, `irate()`, and `increase()`. This feature doesn't currently work with extended range selectors (`promql-extended-range-selectors`). 
 
+## Start timestamp (ST) synthesis
+
+`--enable-feature=st-synthesis`
+
+Enables the synthesis of start timestamps (ST) for cumulative metrics (Counters, Classic Histograms, and Native Histograms) when they are not provided by the source. It tracks previous values to detect resets and subtracts the initial reference point to synthesize a zero-based timeline from the first sample.
+
+> NOTE: This is an experimental feature. Enabling this option can cause increased allocations and memory footprint because it requires caching the previous value per series.
+
+
 ## Concurrent evaluation of independent rules
 
 `--enable-feature=concurrent-rule-eval`
