@@ -3696,13 +3696,13 @@ func testScrapeLoopAppendGracefullyIfAmendOrOutOfOrderOrOutOfBounds(t *testing.T
 	require.Equal(t, 1, seriesAdded)
 }
 
-func TestScrapeLoopCreatesStaleMarkersOnAppendFailures(t *testing.T) {
+func TestScrapeLoopCreatesStaleMarkersOnOOOAppend(t *testing.T) {
 	foreachAppendable(t, func(t *testing.T, appV2 bool) {
-		testScrapeLoopCreatesStaleMarkersOnAppendFailures(t, appV2)
+		testScrapeLoopCreatesStaleMarkersOnOOOAppend(t, appV2)
 	})
 }
 
-func testScrapeLoopCreatesStaleMarkersOnAppendFailures(t *testing.T, appV2 bool) {
+func testScrapeLoopCreatesStaleMarkersOnOOOAppend(t *testing.T, appV2 bool) {
 	appTest := teststorage.NewAppendable()
 	sl, _ := newTestScrapeLoop(t, withAppendable(appTest, appV2))
 
@@ -3713,10 +3713,14 @@ func testScrapeLoopCreatesStaleMarkersOnAppendFailures(t *testing.T, appV2 bool)
 	require.NoError(t, app.Commit())
 
 	metric1Calls := 0
+	// The test storage doesn't track order, so it cannot generate OOO error,
+	// we have to emulate it.
 	appTest.WithErrs(func(ls labels.Labels) error {
 		switch ls.Get(model.MetricNameLabel) {
 		case "metric1":
 			metric1Calls++
+			// Only return error on the first append, the second one will be the
+			// staleness marker.
 			if metric1Calls == 1 {
 				return storage.ErrOutOfOrderSample
 			}
