@@ -261,9 +261,13 @@ loop:
 				st = p.StartTimestamp()
 			}
 
+			// Prepare append call.
+			appOpts := storage.AOptions{}
+
 			// TODO(ridwanmsharif): Consider injecting a 0 value with the st == t here, instead of skipping an append.
 			if sl.synthesizeST && st == 0 {
 				st, val, h, fh, skipAppend, stCache = sl.checkAndSynthesizeStartTime(st, lset, ce, lastMFName, val, h, fh, t)
+				appOpts.RejectOutOfOrder = true
 			}
 
 			for hasExemplar := p.Exemplar(&e); hasExemplar; hasExemplar = p.Exemplar(&e) {
@@ -285,8 +289,6 @@ loop:
 				e = exemplar.Exemplar{} // Reset for the next fetch.
 			}
 
-			// Prepare append call.
-			appOpts := storage.AOptions{}
 			if len(exemplars) > 0 {
 				// Sort so that checking for duplicates / out of order is more efficient during validation.
 				slices.SortFunc(exemplars, exemplar.Compare)
@@ -321,10 +323,6 @@ loop:
 			// Note that even if append is skipped, we may still add to the cache to make sure we save stCache.
 			if !skipAppend {
 				// Append sample to the storage.
-				if stCache != nil {
-					appOpts.RejectOutOfOrder = true
-					// TODO(ridwanmsharif): better handle OOO metrics when st-synthesis is on.
-				}
 				ref, err = app.Append(ref, lset, st, t, val, h, fh, appOpts)
 				if err == nil && ce != nil && ref != 0 {
 					ce.ref = ref
@@ -373,7 +371,7 @@ loop:
 		// - Or we explicitly track staleness for timestamps (sl.trackTimestampsStaleness).
 		// - Or we are synthesizing start times (stCache != nil), so we can clear stCache if it goes stale.
 		shouldTrackStaleness := parsedTimestamp == nil || sl.trackTimestampsStaleness || stCache != nil
-		if ce != nil && err == nil && ce.ref != 0 && shouldTrackStaleness {
+		if ce != nil && ce.ref != 0 && shouldTrackStaleness {
 			sl.cache.trackStaleness(ce.ref, ce)
 		}
 
