@@ -31,7 +31,7 @@ func (m TimeSeries) ToLabels(b *labels.ScratchBuilder, symbols []string) (labels
 	return desymbolizeLabels(b, m.GetLabelsRefs(), symbols)
 }
 
-// ToMetadata return model metadata from timeseries' remote metadata.
+// ToMetadata returns model metadata from timeseries' remote metadata.
 func (m TimeSeries) ToMetadata(symbols []string) (metadata.Metadata, error) {
 	typ := model.MetricTypeUnknown
 	switch m.Metadata.Type {

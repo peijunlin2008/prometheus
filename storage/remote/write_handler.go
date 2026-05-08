@@ -322,7 +322,6 @@ func (h *writeHandler) appendV2(app storage.Appender, req *writev2.Request, rs *
 		m, err := ts.ToMetadata(req.Symbols)
 		if err != nil {
 			badRequestErrs = append(badRequestErrs, fmt.Errorf("parsing metadata for series %v: %w", ts.LabelsRefs, err))
-			samplesWithInvalidLabels += len(ts.Samples) + len(ts.Histograms)
 			continue
 		}
 		if h.enableTypeAndUnitLabels && (m.Type != model.MetricTypeUnknown || m.Unit != "") {
