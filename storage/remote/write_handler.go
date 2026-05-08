@@ -450,7 +450,7 @@ func (h *writeHandler) appendV2(app storage.Appender, req *writev2.Request, rs *
 				continue
 			}
 			// TODO(bwplotka): Add strict mode which would trigger rollback of everything if needed.
-			// For now we keep the previously released flow (just error not debug leve) of dropping them without rollback and 5xx.
+			// For now we keep the previously released flow (just error not debug level) of dropping them without rollback and 5xx.
 			h.logger.Error("failed to ingest exemplar, emitting error log, but no error for PRW caller", "err", err.Error(), "series", ls.String(), "exemplar", fmt.Sprintf("%+v", e))
 		}
 
