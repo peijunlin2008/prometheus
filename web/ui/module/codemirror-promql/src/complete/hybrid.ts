@@ -168,6 +168,10 @@ function arrayToCompletionResult(data: Completion[], from: number, to: number, i
   } as CompletionResult;
 }
 
+function escapePromQLString(str: string): string {
+  return str.replace(/([\\"])/g, '\\$1');
+}
+
 // computeEndCompletePosition calculates the end position for autocompletion replacement.
 // When the cursor is in the middle of a token, this ensures the entire token is replaced,
 // not just the portion before the cursor. This fixes issue #15839.
@@ -794,7 +798,7 @@ export class HybridComplete implements CompleteStrategy {
       return result;
     }
     return this.prometheusClient.labelValues(context.labelName, context.metricName, context.matchers).then((labelValues: string[]) => {
-      return result.concat(labelValues.map((value) => ({ label: value, type: 'text' })));
+      return result.concat(labelValues.map((value) => ({ label: escapePromQLString(value), type: 'text' })));
     });
   }
 }
