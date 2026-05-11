@@ -1916,6 +1916,65 @@ test_metric 32
 	requireSample(t, got[8], "test_metric", 7, timestamp.FromTime(tsF), timestamp.FromTime(tsE), false)
 }
 
+func TestScrapeLoopAppend_StartTimeSynthesis_WithSTStorage(t *testing.T) {
+	ts := time.Now()
+
+	s := teststorage.New(t, func(opt *tsdb.Options) {
+		opt.EnableSTStorage = true
+		opt.EnableXOR2Encoding = true
+	})
+
+	appTest := teststorage.NewAppendable().Then(s)
+	sl, _ := newTestScrapeLoop(t, withAppendable(appTest, true), func(sl *scrapeLoop) {
+		sl.synthesizeST = true
+		sl.parseST = true
+	})
+
+	// First Scrape: anchor the start time, append is skipped.
+	scrapeA := []byte(`# TYPE test_metric counter
+test_metric 10
+# EOF
+`)
+	app := sl.appender()
+	_, _, _, err := app.append(scrapeA, "application/openmetrics-text", ts)
+	require.NoError(t, err)
+	require.NoError(t, app.Commit())
+
+	// Second Scrape: Counter should yield 1 point with delta = 5, and ST = ts.
+	ts2 := ts.Add(time.Second)
+	scrapeB := []byte(`# TYPE test_metric counter
+test_metric 15
+# EOF
+`)
+	app = sl.appender()
+	_, _, _, err = app.append(scrapeB, "application/openmetrics-text", ts2)
+	require.NoError(t, err)
+	require.NoError(t, app.Commit())
+
+	// Verify via querier that ST is actually stored.
+	q, err := tsdb.NewBlockQuerier(s.Head(), math.MinInt64, math.MaxInt64)
+	require.NoError(t, err)
+	defer q.Close()
+
+	ss := q.Select(t.Context(), false, nil, labels.MustNewMatcher(labels.MatchEqual, model.MetricNameLabel, "test_metric"))
+	require.True(t, ss.Next())
+	series := ss.At()
+	require.NoError(t, ss.Err())
+
+	seriesIt := series.Iterator(nil)
+	require.Equal(t, chunkenc.ValFloat, seriesIt.Next())
+
+	// Check sample value and timestamp
+	tVal, vVal := seriesIt.At()
+	require.Equal(t, timestamp.FromTime(ts2), tVal)
+	require.Equal(t, 5.0, vVal)
+
+	// Check Start Timestamp
+	st := seriesIt.AtST()
+	require.Equal(t, timestamp.FromTime(ts), st)
+	require.Equal(t, chunkenc.ValNone, seriesIt.Next())
+}
+
 func TestScrapeLoopAppend_StartTimeSynthesis_OutOfOrder(t *testing.T) {
 	ts := time.Now()
 

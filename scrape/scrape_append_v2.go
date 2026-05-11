@@ -470,7 +470,7 @@ func (sl *scrapeLoop) checkAndSynthesizeStartTime(
 		}
 
 		switch metadata.Type {
-		case model.MetricTypeCounter, model.MetricTypeHistogram, model.MetricTypeSummary:
+		case model.MetricTypeCounter, model.MetricTypeHistogram:
 			// Proceed to synthesis.
 		default:
 			return st, val, h, fh, skipAppend, c
