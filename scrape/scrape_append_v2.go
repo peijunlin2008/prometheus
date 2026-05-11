@@ -149,7 +149,7 @@ loop:
 	for {
 		var (
 			et                       textparse.Entry
-			shouldCache, isHistogram bool
+			sampleAdded, isHistogram bool
 			st                       int64
 			met                      []byte
 			parsedTimestamp          *int64
@@ -335,7 +335,7 @@ loop:
 			}
 		}
 
-		shouldCache, err = sl.checkAddError(met, exemplars, err, &sampleLimitErr, &bucketLimitErr, &appErrs)
+		sampleAdded, err = sl.checkAddError(met, exemplars, err, &sampleLimitErr, &bucketLimitErr, &appErrs)
 		if err != nil {
 			if !errors.Is(err, storage.ErrNotFound) {
 				sl.l.Debug("Unexpected error", "series", string(met), "err", err)
@@ -347,7 +347,7 @@ loop:
 		// But we only do this for series that were appended to TSDB without errors.
 		// If a series was new, but we didn't append it due to sample_limit or other errors then we don't need
 		// it in the scrape cache because we don't need to emit StaleNaNs for it when it disappears.
-		if !seriesCached && shouldCache {
+		if !seriesCached && sampleAdded {
 			ce = sl.cache.addRef(met, ref, lset, hash)
 
 			if sampleLimitErr == nil && bucketLimitErr == nil {
@@ -356,7 +356,7 @@ loop:
 		}
 
 		if ce != nil && sl.synthesizeST {
-			if shouldCache {
+			if sampleAdded {
 				ce.st = stCache // Set it, even if it's nil (explicit reset).
 			} else if seriesCached {
 				ce.st = nil // Clear state on failure for existing series.
@@ -371,7 +371,7 @@ loop:
 		// - Or we explicitly track staleness for timestamps (sl.trackTimestampsStaleness).
 		// - Or we are synthesizing start times (stCache != nil), so we can clear stCache if it goes stale.
 		shouldTrackStaleness := parsedTimestamp == nil || sl.trackTimestampsStaleness || stCache != nil
-		if ce != nil && ce.ref != 0 && shouldTrackStaleness {
+		if ce != nil && ce.ref != 0 && shouldTrackStaleness && sampleAdded {
 			sl.cache.trackStaleness(ce.ref, ce)
 		}
 
