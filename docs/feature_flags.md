@@ -111,7 +111,7 @@ Enables the use of start timestamps (ST) in PromQL functions such as `rate()`, `
 
 `--enable-feature=st-synthesis`
 
-Enables the synthesis of start timestamps (ST) for cumulative metrics (Counters, Classic Histograms, Native Histograms, and Summaries) when they are not provided by the source. Similar to [the official OpenTelemetry metricstarttimeprocessor](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/metricstarttimeprocessor#strategy-subtract-initial-point), it tracks previous values to detect resets and subtracts the initial reference point to synthesize a zero-based timeline from the first sample.
+Enables the synthesis of start timestamps (ST) for cumulative metrics (Counters, Classic Histograms, Native Histograms) when they are not provided by the source. Similar to [the official OpenTelemetry metricstarttimeprocessor](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/metricstarttimeprocessor#strategy-subtract-initial-point), it tracks previous values to detect resets and subtracts the initial reference point to synthesize a zero-based timeline from the first sample.
 
 > NOTE: This is an experimental feature.
 > * The first sample is dropped when this feature is turned on to establish the start timestamp reference point. As a result, if a series has only a single point reported, turning this feature on may result in no points being ingested for that series.
