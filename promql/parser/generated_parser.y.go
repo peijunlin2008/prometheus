@@ -2316,25 +2316,29 @@ yydefault:
 	case 282:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
-			yyVAL.node = &DurationExpr{
+			de := &DurationExpr{
 				Op:       STEP,
 				StartPos: yyDollar[1].item.PositionRange().Start,
 				EndPos:   yyDollar[3].item.PositionRange().End,
 			}
+			yylex.(*parser).experimentalDurationExpr(de)
+			yyVAL.node = de
 		}
 	case 283:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
-			yyVAL.node = &DurationExpr{
+			de := &DurationExpr{
 				Op:       RANGE,
 				StartPos: yyDollar[1].item.PositionRange().Start,
 				EndPos:   yyDollar[3].item.PositionRange().End,
 			}
+			yylex.(*parser).experimentalDurationExpr(de)
+			yyVAL.node = de
 		}
 	case 284:
 		yyDollar = yyS[yypt-4 : yypt+1]
 		{
-			yyVAL.node = &DurationExpr{
+			de := &DurationExpr{
 				Op: yyDollar[1].item.Typ,
 				RHS: &DurationExpr{
 					Op:       STEP,
@@ -2343,11 +2347,13 @@ yydefault:
 				},
 				StartPos: yyDollar[1].item.Pos,
 			}
+			yylex.(*parser).experimentalDurationExpr(de)
+			yyVAL.node = de
 		}
 	case 285:
 		yyDollar = yyS[yypt-4 : yypt+1]
 		{
-			yyVAL.node = &DurationExpr{
+			de := &DurationExpr{
 				Op: yyDollar[1].item.Typ,
 				RHS: &DurationExpr{
 					Op:       RANGE,
@@ -2356,22 +2362,26 @@ yydefault:
 				},
 				StartPos: yyDollar[1].item.Pos,
 			}
+			yylex.(*parser).experimentalDurationExpr(de)
+			yyVAL.node = de
 		}
 	case 286:
 		yyDollar = yyS[yypt-6 : yypt+1]
 		{
-			yyVAL.node = &DurationExpr{
+			de := &DurationExpr{
 				Op:       yyDollar[1].item.Typ,
 				StartPos: yyDollar[1].item.PositionRange().Start,
 				EndPos:   yyDollar[6].item.PositionRange().End,
 				LHS:      yyDollar[3].node.(Expr),
 				RHS:      yyDollar[5].node.(Expr),
 			}
+			yylex.(*parser).experimentalDurationExpr(de)
+			yyVAL.node = de
 		}
 	case 287:
 		yyDollar = yyS[yypt-7 : yypt+1]
 		{
-			yyVAL.node = &DurationExpr{
+			de := &DurationExpr{
 				Op:       yyDollar[1].item.Typ,
 				StartPos: yyDollar[1].item.Pos,
 				EndPos:   yyDollar[6].node.PositionRange().End,
@@ -2383,6 +2393,8 @@ yydefault:
 					RHS:      yyDollar[6].node.(Expr),
 				},
 			}
+			yylex.(*parser).experimentalDurationExpr(de)
+			yyVAL.node = de
 		}
 	case 288:
 		yyDollar = yyS[yypt-4 : yypt+1]
@@ -2492,31 +2504,37 @@ yydefault:
 	case 300:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
-			yyVAL.node = &DurationExpr{
+			de := &DurationExpr{
 				Op:       STEP,
 				StartPos: yyDollar[1].item.PositionRange().Start,
 				EndPos:   yyDollar[3].item.PositionRange().End,
 			}
+			yylex.(*parser).experimentalDurationExpr(de)
+			yyVAL.node = de
 		}
 	case 301:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
-			yyVAL.node = &DurationExpr{
+			de := &DurationExpr{
 				Op:       RANGE,
 				StartPos: yyDollar[1].item.PositionRange().Start,
 				EndPos:   yyDollar[3].item.PositionRange().End,
 			}
+			yylex.(*parser).experimentalDurationExpr(de)
+			yyVAL.node = de
 		}
 	case 302:
 		yyDollar = yyS[yypt-6 : yypt+1]
 		{
-			yyVAL.node = &DurationExpr{
+			de := &DurationExpr{
 				Op:       yyDollar[1].item.Typ,
 				StartPos: yyDollar[1].item.PositionRange().Start,
 				EndPos:   yyDollar[6].item.PositionRange().End,
 				LHS:      yyDollar[3].node.(Expr),
 				RHS:      yyDollar[5].node.(Expr),
 			}
+			yylex.(*parser).experimentalDurationExpr(de)
+			yyVAL.node = de
 		}
 	case 304:
 		yyDollar = yyS[yypt-3 : yypt+1]

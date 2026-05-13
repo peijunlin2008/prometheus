@@ -1201,23 +1201,27 @@ offset_duration_expr    : number_duration_literal
                                 }
                         | STEP LEFT_PAREN RIGHT_PAREN
                                 {
-                                $$ = &DurationExpr{
-                                        Op:  STEP,
+                                de := &DurationExpr{
+                                        Op:       STEP,
                                         StartPos: $1.PositionRange().Start,
-                                        EndPos: $3.PositionRange().End,
+                                        EndPos:   $3.PositionRange().End,
                                 }
+                                yylex.(*parser).experimentalDurationExpr(de)
+                                $$ = de
                                 }
                         | RANGE LEFT_PAREN RIGHT_PAREN
                                 {
-                                $$ = &DurationExpr{
-                                        Op:  RANGE,
+                                de := &DurationExpr{
+                                        Op:       RANGE,
                                         StartPos: $1.PositionRange().Start,
-                                        EndPos: $3.PositionRange().End,
+                                        EndPos:   $3.PositionRange().End,
                                 }
+                                yylex.(*parser).experimentalDurationExpr(de)
+                                $$ = de
                                 }
                         | unary_op STEP LEFT_PAREN RIGHT_PAREN
                                 {
-                                $$ = &DurationExpr{
+                                de := &DurationExpr{
                                         Op:  $1.Typ,
                                         RHS: &DurationExpr{
                                                 Op:       STEP,
@@ -1226,10 +1230,12 @@ offset_duration_expr    : number_duration_literal
                                         },
                                         StartPos: $1.Pos,
                                 }
+                                yylex.(*parser).experimentalDurationExpr(de)
+                                $$ = de
                                 }
                         | unary_op RANGE LEFT_PAREN RIGHT_PAREN
                                 {
-                                $$ = &DurationExpr{
+                                de := &DurationExpr{
                                         Op:  $1.Typ,
                                         RHS: &DurationExpr{
                                                 Op:       RANGE,
@@ -1238,20 +1244,24 @@ offset_duration_expr    : number_duration_literal
                                         },
                                         StartPos: $1.Pos,
                                 }
+                                yylex.(*parser).experimentalDurationExpr(de)
+                                $$ = de
                                 }
                         | min_max LEFT_PAREN duration_expr COMMA duration_expr RIGHT_PAREN
                                 {
-                                    $$ = &DurationExpr{
+                                    de := &DurationExpr{
                                         Op:       $1.Typ,
                                         StartPos: $1.PositionRange().Start,
                                         EndPos:   $6.PositionRange().End,
                                         LHS:      $3.(Expr),
                                         RHS:      $5.(Expr),
                                     }
+                                    yylex.(*parser).experimentalDurationExpr(de)
+                                    $$ = de
                                 }
                         | unary_op min_max LEFT_PAREN duration_expr COMMA duration_expr RIGHT_PAREN
                                 {
-                                    $$ = &DurationExpr{
+                                    de := &DurationExpr{
                                         Op:       $1.Typ,
                                         StartPos: $1.Pos,
                                         EndPos:   $6.PositionRange().End,
@@ -1263,6 +1273,8 @@ offset_duration_expr    : number_duration_literal
                                                 RHS:      $6.(Expr),
                                         },
                                     }
+                                    yylex.(*parser).experimentalDurationExpr(de)
+                                    $$ = de
                                 }
                         | unary_op LEFT_PAREN duration_expr RIGHT_PAREN %prec MUL
                                 {
@@ -1367,29 +1379,35 @@ duration_expr   : number_duration_literal
                         }
                 | STEP LEFT_PAREN RIGHT_PAREN
                         {
-                            $$ = &DurationExpr{
+                            de := &DurationExpr{
                                 Op:       STEP,
                                 StartPos: $1.PositionRange().Start,
                                 EndPos:   $3.PositionRange().End,
                             }
+                            yylex.(*parser).experimentalDurationExpr(de)
+                            $$ = de
                         }
                 | RANGE LEFT_PAREN RIGHT_PAREN
                         {
-                            $$ = &DurationExpr{
+                            de := &DurationExpr{
                                 Op:       RANGE,
                                 StartPos: $1.PositionRange().Start,
                                 EndPos:   $3.PositionRange().End,
                             }
+                            yylex.(*parser).experimentalDurationExpr(de)
+                            $$ = de
                         }
                 | min_max LEFT_PAREN duration_expr COMMA duration_expr RIGHT_PAREN
                         {
-                            $$ = &DurationExpr{
+                            de := &DurationExpr{
                                 Op:       $1.Typ,
                                 StartPos: $1.PositionRange().Start,
                                 EndPos:   $6.PositionRange().End,
                                 LHS: $3.(Expr),
                                 RHS: $5.(Expr),
                             }
+                            yylex.(*parser).experimentalDurationExpr(de)
+                            $$ = de
                         }
                 | paren_duration_expr
                 ;
