@@ -22,7 +22,7 @@ import (
 )
 
 func TestTranslateASTDurationExpressions(t *testing.T) {
-	p := parser.NewParser(parser.Options{})
+	p := parser.NewParser(parser.Options{ExperimentalDurationExpr: true})
 
 	type tc struct {
 		name       string
