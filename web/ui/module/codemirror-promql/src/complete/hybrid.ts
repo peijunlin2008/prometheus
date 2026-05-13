@@ -169,6 +169,9 @@ function arrayToCompletionResult(data: Completion[], from: number, to: number, i
 }
 
 function escapePromQLString(str: string): string {
+  // PromQL only evaluates escape sequences in single- and double-quoted strings.
+  // Backtick-quoted string completions are not handled separately today, so keep
+  // the inserted value escaped unconditionally.
   return str.replace(/([\\"])/g, '\\$1');
 }
 
@@ -798,7 +801,7 @@ export class HybridComplete implements CompleteStrategy {
       return result;
     }
     return this.prometheusClient.labelValues(context.labelName, context.metricName, context.matchers).then((labelValues: string[]) => {
-      return result.concat(labelValues.map((value) => ({ label: escapePromQLString(value), type: 'text' })));
+      return result.concat(labelValues.map((value) => ({ label: value, apply: escapePromQLString(value), type: 'text' })));
     });
   }
 }
