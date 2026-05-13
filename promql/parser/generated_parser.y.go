@@ -2446,21 +2446,25 @@ yydefault:
 	case 294:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
+			yylex.(*parser).experimentalDurationExpr(yyDollar[1].node.(Expr))
 			yyVAL.node = &DurationExpr{Op: ADD, LHS: yyDollar[1].node.(Expr), RHS: yyDollar[3].node.(Expr)}
 		}
 	case 295:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
+			yylex.(*parser).experimentalDurationExpr(yyDollar[1].node.(Expr))
 			yyVAL.node = &DurationExpr{Op: SUB, LHS: yyDollar[1].node.(Expr), RHS: yyDollar[3].node.(Expr)}
 		}
 	case 296:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
+			yylex.(*parser).experimentalDurationExpr(yyDollar[1].node.(Expr))
 			yyVAL.node = &DurationExpr{Op: MUL, LHS: yyDollar[1].node.(Expr), RHS: yyDollar[3].node.(Expr)}
 		}
 	case 297:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
+			yylex.(*parser).experimentalDurationExpr(yyDollar[1].node.(Expr))
 			if nl, ok := yyDollar[3].node.(*NumberLiteral); ok && nl.Val == 0 {
 				yylex.(*parser).addParseErrf(yyDollar[2].item.PositionRange(), "division by zero")
 				yyVAL.node = &NumberLiteral{Val: 0}
@@ -2471,6 +2475,7 @@ yydefault:
 	case 298:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
+			yylex.(*parser).experimentalDurationExpr(yyDollar[1].node.(Expr))
 			if nl, ok := yyDollar[3].node.(*NumberLiteral); ok && nl.Val == 0 {
 				yylex.(*parser).addParseErrf(yyDollar[2].item.PositionRange(), "modulo by zero")
 				yyVAL.node = &NumberLiteral{Val: 0}
@@ -2481,6 +2486,7 @@ yydefault:
 	case 299:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
+			yylex.(*parser).experimentalDurationExpr(yyDollar[1].node.(Expr))
 			yyVAL.node = &DurationExpr{Op: POW, LHS: yyDollar[1].node.(Expr), RHS: yyDollar[3].node.(Expr)}
 		}
 	case 300:
@@ -2515,6 +2521,7 @@ yydefault:
 	case 304:
 		yyDollar = yyS[yypt-3 : yypt+1]
 		{
+			yylex.(*parser).experimentalDurationExpr(yyDollar[2].node.(Expr))
 			if durationExpr, ok := yyDollar[2].node.(*DurationExpr); ok {
 				durationExpr.Wrapped = true
 				yyVAL.node = durationExpr
