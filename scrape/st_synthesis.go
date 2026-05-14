@@ -98,7 +98,7 @@ func (c *stCache) synthesizeHistogram(h *histogram.Histogram, st int64) (*histog
 	if currFloat.DetectReset(n.prev) {
 		// Reset detected.
 		n.prev = currFloat.Copy()
-		n.starting = n.prev
+		n.starting = nil // No starting, nothing to adjust for.
 		// ST is somewhere between prev timestamp and current timestamp.
 		// Pick the least risky guess: 1ms before the current timestamp.
 		c.st = st - 1
@@ -106,6 +106,10 @@ func (c *stCache) synthesizeHistogram(h *histogram.Histogram, st int64) (*histog
 	}
 
 	n.prev = currFloat.Copy()
+	if n.starting == nil {
+		// Nothing to be adjusted for, return as-is.
+		return h, c.st, false
+	}
 
 	// TODO(ridwanmsharif): If we implement DetectResets and Sub for Histograms, we
 	// can do this in a cleaner way without losing precision when converting to
@@ -178,7 +182,7 @@ func (c *stCache) synthesizeFloatHistogram(fh *histogram.FloatHistogram, st int6
 	if fh.DetectReset(n.prev) {
 		// Reset detected.
 		n.prev = fh.Copy()
-		n.starting = n.prev
+		n.starting = nil // No starting, nothing to adjust for.
 		// ST is somewhere between prev timestamp and current timestamp.
 		// Pick the least risky guess: 1ms before the current timestamp.
 		c.st = st - 1
@@ -186,6 +190,10 @@ func (c *stCache) synthesizeFloatHistogram(fh *histogram.FloatHistogram, st int6
 	}
 
 	n.prev = fh.Copy()
+	if n.starting == nil {
+		// Nothing to be adjusted for, return as-is.
+		return fh, c.st, false
+	}
 
 	// Subtract the origin anchor.
 	adjusted, _, _, _ := fh.Sub(n.starting)
