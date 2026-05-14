@@ -1566,6 +1566,7 @@ describe('autocomplete promQL test', () => {
         options: [
           {
             label: 'demo',
+            apply: 'demo',
             type: 'text',
           },
           {
