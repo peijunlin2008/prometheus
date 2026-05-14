@@ -130,7 +130,6 @@ func TestSynthesizeFloatHistogram_ValidAndReset(t *testing.T) {
 	require.Equal(t, 5.0, v.ZeroCount)
 	require.Equal(t, int64(2999), ct)
 	require.False(t, skip)
-
 }
 
 func TestSynthesizeHistogram_ValidAndReset(t *testing.T) {

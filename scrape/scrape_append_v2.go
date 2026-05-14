@@ -469,6 +469,7 @@ func (sl *scrapeLoop) checkAndSynthesizeStartTime(
 			return st, val, h, fh, skipAppend, c
 		}
 
+		// TODO(bwplotka): Add support for _count and _sum summary series.
 		switch metadata.Type {
 		case model.MetricTypeCounter, model.MetricTypeHistogram:
 			// Proceed to synthesis.
