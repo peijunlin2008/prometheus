@@ -21,7 +21,7 @@ import (
 	"github.com/prometheus/prometheus/model/histogram"
 )
 
-func TestSynthesizeNumber_ValidCounter(t *testing.T) {
+func TestSynthesizeFloat_ValidCounter(t *testing.T) {
 	st := &stCache{}
 
 	// Scrape loop anchors first sample
@@ -47,7 +47,7 @@ func TestSynthesizeNumber_ValidCounter(t *testing.T) {
 	require.False(t, skip)
 }
 
-func TestSynthesizeNumber_CounterReset(t *testing.T) {
+func TestSynthesizeFloat_CounterReset(t *testing.T) {
 	st := &stCache{}
 
 	// Scrape loop anchors first sample
