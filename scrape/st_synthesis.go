@@ -51,7 +51,7 @@ type histogramSynthesis struct {
 }
 
 // synthesizeFloat updates the synthesis cache for a float and returns the adjusted value, synthesized start time, and whether to skip append (for first sample).
-func (c *stCache) synthesizeFloat(v float64, st int64) (float64, int64, bool) {
+func (c *stCache) synthesizeFloat(v float64, t int64) (float64, int64, bool) {
 	if c.f == nil {
 		c.f = &floatSynthesis{}
 	}
@@ -61,8 +61,8 @@ func (c *stCache) synthesizeFloat(v float64, st int64) (float64, int64, bool) {
 		// First sample.
 		n.prev = v
 		n.starting = v
-		c.st = st
-		return v, st, true
+		c.st = t
+		return v, c.st, true
 	}
 
 	if v < n.prev {
@@ -70,7 +70,7 @@ func (c *stCache) synthesizeFloat(v float64, st int64) (float64, int64, bool) {
 		n.starting = 0
 		// ST is somewhere between prev timestamp and current timestamp.
 		// Pick the least risky guess: 1ms before the current timestamp.
-		c.st = st - 1
+		c.st = t - 1
 	}
 
 	n.prev = v
@@ -80,7 +80,7 @@ func (c *stCache) synthesizeFloat(v float64, st int64) (float64, int64, bool) {
 }
 
 // synthesizeHistogram updates the synthesis state for a classic/native Integer Histogram and returns the adjusted histogram, synthesized start time, and whether to skip append (for first sample).
-func (c *stCache) synthesizeHistogram(h *histogram.Histogram, st int64) (*histogram.Histogram, int64, bool) {
+func (c *stCache) synthesizeHistogram(h *histogram.Histogram, t int64) (*histogram.Histogram, int64, bool) {
 	if c.h == nil {
 		c.h = &histogramSynthesis{}
 	}
@@ -91,8 +91,8 @@ func (c *stCache) synthesizeHistogram(h *histogram.Histogram, st int64) (*histog
 		// First sample.
 		n.prev = currFloat.Copy()
 		n.starting = n.prev
-		c.st = st
-		return h, st, true
+		c.st = t
+		return h, c.st, true
 	}
 
 	if currFloat.DetectReset(n.prev) {
@@ -101,7 +101,7 @@ func (c *stCache) synthesizeHistogram(h *histogram.Histogram, st int64) (*histog
 		n.starting = nil // No starting, nothing to adjust for.
 		// ST is somewhere between prev timestamp and current timestamp.
 		// Pick the least risky guess: 1ms before the current timestamp.
-		c.st = st - 1
+		c.st = t - 1
 		return h, c.st, false
 	}
 
@@ -165,7 +165,7 @@ func (c *stCache) synthesizeHistogram(h *histogram.Histogram, st int64) (*histog
 }
 
 // synthesizeFloatHistogram updates the synthesis state for a FloatHistogram and returns the adjusted histogram, synthesized start time, and whether to skip append (for first sample).
-func (c *stCache) synthesizeFloatHistogram(fh *histogram.FloatHistogram, st int64) (*histogram.FloatHistogram, int64, bool) {
+func (c *stCache) synthesizeFloatHistogram(fh *histogram.FloatHistogram, t int64) (*histogram.FloatHistogram, int64, bool) {
 	if c.h == nil {
 		c.h = &histogramSynthesis{}
 	}
@@ -175,8 +175,8 @@ func (c *stCache) synthesizeFloatHistogram(fh *histogram.FloatHistogram, st int6
 		// First sample.
 		n.prev = fh.Copy()
 		n.starting = n.prev
-		c.st = st
-		return fh, st, true
+		c.st = t
+		return fh, t, true
 	}
 
 	if fh.DetectReset(n.prev) {
@@ -185,7 +185,7 @@ func (c *stCache) synthesizeFloatHistogram(fh *histogram.FloatHistogram, st int6
 		n.starting = nil // No starting, nothing to adjust for.
 		// ST is somewhere between prev timestamp and current timestamp.
 		// Pick the least risky guess: 1ms before the current timestamp.
-		c.st = st - 1
+		c.st = t - 1
 		return fh, c.st, false
 	}
 
